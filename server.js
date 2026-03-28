@@ -112,12 +112,13 @@ function mergeSubscriptionContents(results) {
   return results[0];
 }
 
-// Properly merge multiple Clash YAML configs
+// Merge Clash configs by text surgery — preserves original formatting that Clash clients expect.
+// Uses js-yaml only for PARSING (to extract proxy data), never for serialization.
 function mergeClashConfigs(results) {
-  // Parse all configs
-  const configs = results.map((r) => {
+  // Parse all configs to extract proxy data
+  const configs = results.map((r, i) => {
     try {
-      return yaml.load(r.content);
+      return { parsed: yaml.load(r.content), raw: r.content, index: i };
     } catch {
       return null;
     }
@@ -125,53 +126,158 @@ function mergeClashConfigs(results) {
 
   if (configs.length === 0) return results[0];
 
-  // Use first config as base
   const base = configs[0];
-  const baseProxies = base.proxies || [];
-  const existingNames = new Set(baseProxies.map((p) => p.name));
-  const newProxyNames = [];
+  const baseNames = new Set((base.parsed.proxies || []).map((p) => p.name));
+  const newProxyLines = [];   // raw YAML lines to insert
+  const newProxyNames = [];   // names for proxy-group patching
 
-  // Merge proxies from all other configs
+  // Extract new proxies from other configs as raw text lines
   for (let i = 1; i < configs.length; i++) {
-    const extraProxies = configs[i].proxies || [];
-    for (const proxy of extraProxies) {
-      if (proxy.name && !existingNames.has(proxy.name)) {
-        existingNames.add(proxy.name);
-        baseProxies.push(proxy);
-        newProxyNames.push(proxy.name);
+    const otherParsed = configs[i].parsed;
+    const otherRaw = configs[i].raw;
+
+    // Extract the raw proxies section text from this config
+    const rawProxyEntries = extractRawProxyEntries(otherRaw);
+
+    for (const entry of rawProxyEntries) {
+      // Parse name from the raw text
+      const nameMatch = entry.match(/name:\s*['"]?([^'",}\n]+)/);
+      const name = nameMatch ? nameMatch[1].trim() : null;
+      if (name && !baseNames.has(name)) {
+        baseNames.add(name);
+        newProxyLines.push(entry);
+        newProxyNames.push(name);
       }
     }
   }
 
-  base.proxies = baseProxies;
-
-  // Add new proxy names to proxy-groups so they're actually usable
-  if (base['proxy-groups'] && newProxyNames.length > 0) {
-    for (const group of base['proxy-groups']) {
-      if (!group.proxies) continue;
-      // Add to groups that use "select" or "url-test" or "fallback" or "load-balance"
-      const type = group.type;
-      if (['select', 'url-test', 'fallback', 'load-balance'].includes(type)) {
-        group.proxies.push(...newProxyNames);
-      }
-    }
+  if (newProxyLines.length === 0) {
+    console.log('[merge] No new proxies to merge, returning base config');
+    return results[0];
   }
 
-  const merged = yaml.dump(base, {
-    lineWidth: -1,     // no line wrapping
-    noRefs: true,       // no YAML anchors
-    quotingType: '"',
-    forceQuotes: false,
-  });
+  // Step 1: Insert new proxy lines at end of proxies section in the raw base text
+  let merged = insertProxiesIntoRaw(base.raw, newProxyLines);
+
+  // Step 2: Patch proxy-groups to include new proxy names
+  merged = patchProxyGroups(merged, base.parsed, newProxyNames);
 
   console.log(
-    `[merge] Merged ${configs.length} configs: ${baseProxies.length} total proxies (${newProxyNames.length} new)`
+    `[merge] Merged ${configs.length} configs: ${baseNames.size} total proxies (${newProxyNames.length} new)`
   );
 
   return {
     content: merged,
-    contentType: 'text/yaml; charset=utf-8',
+    contentType: results[0].contentType,
   };
+}
+
+// Extract each proxy entry as a raw text line from a Clash YAML config
+function extractRawProxyEntries(rawYaml) {
+  const lines = rawYaml.split('\n');
+  const entries = [];
+  let inProxies = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^proxies:\s*$/.test(line)) {
+      inProxies = true;
+      continue;
+    }
+    if (inProxies) {
+      // Stop at next top-level key
+      if (/^\S/.test(line) && !/^\s*-/.test(line) && line.trim() !== '') {
+        break;
+      }
+      // Compact format: - { name: xxx, ... }
+      if (/^\s+-\s*\{/.test(line)) {
+        entries.push(line);
+      }
+      // Block format: - name: xxx (skip for now, less common)
+    }
+  }
+  return entries;
+}
+
+// Insert proxy lines into raw YAML text, right before the next section after proxies
+function insertProxiesIntoRaw(rawYaml, newLines) {
+  const lines = rawYaml.split('\n');
+  const result = [];
+  let inProxies = false;
+  let inserted = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (/^proxies:\s*$/.test(line)) {
+      inProxies = true;
+      result.push(line);
+      continue;
+    }
+
+    // Detect end of proxies section (next top-level key)
+    if (inProxies && !inserted && /^\S/.test(line) && !/^\s*-/.test(line) && line.trim() !== '') {
+      // Insert new proxies before this line, using same indentation as existing entries
+      const indent = detectProxyIndent(result);
+      for (const pl of newLines) {
+        // Normalize indentation to match base config
+        result.push(pl.replace(/^\s+/, indent));
+      }
+      inserted = true;
+      inProxies = false;
+    }
+
+    result.push(line);
+  }
+
+  // If proxies was the last section
+  if (inProxies && !inserted) {
+    const indent = detectProxyIndent(result);
+    for (const pl of newLines) {
+      result.push(pl.replace(/^\s+/, indent));
+    }
+  }
+
+  return result.join('\n');
+}
+
+// Detect the indentation used for proxy entries in the config
+function detectProxyIndent(lines) {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = lines[i].match(/^(\s+)-\s/);
+    if (m) return m[1];
+  }
+  return '    '; // default 4 spaces
+}
+
+// Patch proxy-groups in raw text to include new proxy names
+function patchProxyGroups(rawYaml, parsedBase, newNames) {
+  if (!parsedBase['proxy-groups'] || newNames.length === 0) return rawYaml;
+
+  // Build a comma-separated string of new names for inline format
+  const newNamesStr = newNames.map((n) => {
+    // Quote names that contain special chars
+    return /[,\[\]{}:'"#&*!|>%@`\s]/.test(n) ? `'${n.replace(/'/g, "''")}'` : n;
+  }).join(', ');
+
+  const lines = rawYaml.split('\n');
+  const result = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Match inline proxy-group with select/url-test/fallback/load-balance and a proxies array
+    if (/^\s+-\s*\{.*type:\s*(select|url-test|fallback|load-balance).*proxies:\s*\[/.test(line)) {
+      // Find the proxies array closing bracket ']' and insert before it
+      // The ']' may be followed by ', url: ...' or '} ' etc.
+      const patched = line.replace(/(proxies:\s*\[[^\]]*)\]/, `$1, ${newNamesStr}]`);
+      result.push(patched);
+    } else {
+      result.push(line);
+    }
+  }
+
+  return result.join('\n');
 }
 
 // Fetch from a single subscription with failover awareness
