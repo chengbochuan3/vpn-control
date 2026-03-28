@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VPN Link Manager</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0f1117; color: #e1e4e8; line-height: 1.6;
+    min-height: 100vh;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 20px; }
+  h1 { font-size: 1.5rem; margin-bottom: 4px; }
+  h2 { font-size: 1.1rem; margin-bottom: 12px; color: #8b949e; font-weight: 500; }
+
+  #auth-screen {
+    display: flex; align-items: center; justify-content: center;
+    height: 100vh; flex-direction: column; gap: 16px;
+  }
+  #auth-screen input {
+    padding: 10px 16px; width: 320px; border-radius: 8px;
+    border: 1px solid #30363d; background: #161b22; color: #e1e4e8; font-size: 1rem;
+  }
+  #auth-screen button { width: 320px; }
+
+  .card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+    padding: 20px; margin-bottom: 16px;
+  }
+  .card-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 16px;
+  }
+  .card-header h2 { margin-bottom: 0; }
+
+  .form-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+  .form-group { display: flex; flex-direction: column; gap: 4px; }
+  .form-group label { font-size: 0.8rem; color: #8b949e; }
+  input, select {
+    padding: 8px 12px; border-radius: 6px;
+    border: 1px solid #30363d; background: #0d1117; color: #e1e4e8; font-size: 0.9rem;
+  }
+  input:focus, select:focus { outline: none; border-color: #58a6ff; }
+
+  button, .btn {
+    padding: 8px 16px; border-radius: 6px; border: 1px solid #30363d;
+    background: #21262d; color: #e1e4e8; cursor: pointer; font-size: 0.85rem;
+    transition: background 0.15s;
+  }
+  button:hover { background: #30363d; }
+  .btn-primary { background: #238636; border-color: #238636; }
+  .btn-primary:hover { background: #2ea043; }
+  .btn-danger { background: #da3633; border-color: #da3633; }
+  .btn-danger:hover { background: #f85149; }
+  .btn-sm { padding: 4px 10px; font-size: 0.78rem; }
+  .btn-warn { background: #9e6a03; border-color: #9e6a03; }
+  .btn-warn:hover { background: #bb8009; }
+  .btn-blue { background: #1f6feb; border-color: #1f6feb; }
+  .btn-blue:hover { background: #388bfd; }
+
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 0.75rem; font-weight: 600;
+  }
+  .badge-green { background: #238636; color: #fff; }
+  .badge-red { background: #da3633; color: #fff; }
+  .badge-gray { background: #484f58; color: #e1e4e8; }
+  .badge-yellow { background: #9e6a03; color: #fff; }
+  .badge-blue { background: #1f6feb; color: #fff; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { text-align: left; color: #8b949e; font-weight: 500; padding: 8px 6px; border-bottom: 1px solid #30363d; }
+  td { padding: 10px 6px; border-bottom: 1px solid #21262d; vertical-align: middle; }
+  tr:hover td { background: #1c2128; }
+
+  .health-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+  .health-card {
+    background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+    padding: 12px; text-align: center;
+  }
+  .health-card .name { font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; }
+  .health-card .latency { font-size: 0.8rem; color: #8b949e; margin-top: 4px; }
+
+  .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
+  .stat-card {
+    background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+    padding: 14px; text-align: center;
+  }
+  .stat-card .value { font-size: 1.6rem; font-weight: 700; color: #58a6ff; }
+  .stat-card .label { font-size: 0.78rem; color: #8b949e; }
+
+  .url-box {
+    display: flex; align-items: center; gap: 8px; background: #0d1117;
+    border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px;
+    margin-top: 10px; word-break: break-all; font-size: 0.85rem;
+  }
+  .url-box code { flex: 1; color: #58a6ff; }
+  .copy-btn { white-space: nowrap; }
+
+  .toast {
+    position: fixed; bottom: 20px; right: 20px; padding: 12px 20px;
+    background: #238636; color: #fff; border-radius: 8px;
+    font-size: 0.9rem; opacity: 0; transition: opacity 0.3s; pointer-events: none;
+    z-index: 999;
+  }
+  .toast.show { opacity: 1; }
+
+  .modal-overlay {
+    display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6); z-index: 100; align-items: center; justify-content: center;
+  }
+  .modal-overlay.active { display: flex; }
+  .modal {
+    background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+    padding: 24px; width: 500px; max-width: 90vw; max-height: 90vh; overflow-y: auto;
+  }
+  .modal h3 { margin-bottom: 16px; font-size: 1.1rem; }
+  .modal .form-group { margin-bottom: 12px; }
+  .modal .form-group input { width: 100%; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+
+  /* Traffic bar */
+  .traffic-bar { width: 100%; height: 6px; background: #30363d; border-radius: 3px; margin-top: 4px; }
+  .traffic-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+  .traffic-info { font-size: 0.78rem; color: #8b949e; }
+  .traffic-info .warn { color: #d29922; }
+  .traffic-info .danger { color: #f85149; }
+  .expire-info { font-size: 0.78rem; }
+  .expire-ok { color: #3fb950; }
+  .expire-warn { color: #d29922; }
+  .expire-danger { color: #f85149; }
+  .expire-na { color: #484f58; }
+
+  /* Checkbox list */
+  .checkbox-list { max-height: 200px; overflow-y: auto; border: 1px solid #30363d; border-radius: 6px; padding: 8px; background: #0d1117; }
+  .checkbox-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 0.85rem; }
+  .checkbox-item input[type="checkbox"] { accent-color: #58a6ff; width: 16px; height: 16px; }
+  .checkbox-item .sub-detail { color: #8b949e; font-size: 0.78rem; }
+
+  @media (max-width: 640px) {
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    .form-row { flex-direction: column; }
+    .form-row .form-group { width: 100%; }
+    .form-row input { width: 100%; }
+    table { font-size: 0.78rem; }
+  }
+
+  .mono { font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 0.82rem; }
+  .text-muted { color: #8b949e; }
+  .text-sm { font-size: 0.8rem; }
+  .actions { display: flex; gap: 4px; flex-wrap: wrap; }
+  .sub-url { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .info-updated { font-size: 0.72rem; color: #484f58; }
+</style>
+</head>
+<body>
+
+<div id="auth-screen">
+  <h1>VPN Link Manager</h1>
+  <p class="text-muted">Enter admin token to continue</p>
+  <input type="password" id="token-input" placeholder="Admin Token" autofocus>
+  <button class="btn-primary" onclick="login()">Login</button>
+</div>
+
+<div id="app" style="display:none">
+<div class="container">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+    <div>
+      <h1>VPN Link Manager</h1>
+      <p class="text-muted text-sm">Manage your subscription share links</p>
+    </div>
+    <button class="btn-sm" onclick="logout()">Logout</button>
+  </div>
+
+  <div class="stats-grid">
+    <div class="stat-card"><div class="value" id="stat-total">-</div><div class="label">Total Shares</div></div>
+    <div class="stat-card"><div class="value" id="stat-active">-</div><div class="label">Active</div></div>
+    <div class="stat-card"><div class="value" id="stat-uses">-</div><div class="label">Total Uses</div></div>
+    <div class="stat-card"><div class="value" id="stat-health">-</div><div class="label">Links Healthy</div></div>
+  </div>
+
+  <!-- Subscriptions -->
+  <div class="card">
+    <div class="card-header">
+      <h2>Subscription Links</h2>
+      <div class="actions">
+        <button class="btn-sm btn-blue" onclick="refreshAllInfo()">Refresh Info</button>
+        <button class="btn-sm btn-primary" onclick="openAddSubModal()">+ Add Link</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Traffic</th>
+            <th>Expiry</th>
+            <th>Role</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="subs-table"></tbody>
+      </table>
+    </div>
+    <div class="info-updated" id="info-updated-time" style="margin-top:8px"></div>
+  </div>
+
+  <!-- Create Share -->
+  <div class="card">
+    <h2>Create Share Link</h2>
+    <div class="form-row">
+      <div class="form-group" style="flex:1">
+        <label>Label (who is this for?)</label>
+        <input type="text" id="share-label" placeholder="e.g. friend-phone">
+      </div>
+      <div class="form-group" style="width:120px">
+        <label>Max Uses (0=unlimited)</label>
+        <input type="number" id="share-max-uses" value="1" min="0">
+      </div>
+    </div>
+    <div class="form-group" style="margin-top:10px">
+      <label>Include Subscriptions</label>
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px">
+        <label style="font-size:0.82rem; display:flex; align-items:center; gap:4px; cursor:pointer;">
+          <input type="radio" name="sub-mode" value="all" checked onchange="toggleSubSelection()"> All subscriptions
+        </label>
+        <label style="font-size:0.82rem; display:flex; align-items:center; gap:4px; cursor:pointer;">
+          <input type="radio" name="sub-mode" value="select" onchange="toggleSubSelection()"> Select specific
+        </label>
+      </div>
+      <div id="sub-selection" class="checkbox-list" style="display:none"></div>
+    </div>
+    <div style="margin-top:10px">
+      <button class="btn-primary" onclick="createShare()">Create</button>
+    </div>
+    <div id="new-share-url" style="display:none"></div>
+  </div>
+
+  <!-- Shares List -->
+  <div class="card">
+    <div class="card-header">
+      <h2>Share Links</h2>
+      <button class="btn-sm" onclick="loadShares()">Refresh</button>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th>Label</th>
+            <th>Subscriptions</th>
+            <th>Status</th>
+            <th>Uses</th>
+            <th>Created</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="shares-table"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Health -->
+  <div class="card">
+    <div class="card-header">
+      <h2>Link Health</h2>
+      <button class="btn-sm" onclick="checkHealth()">Check Now</button>
+    </div>
+    <div class="health-grid" id="health-grid"></div>
+  </div>
+</div>
+</div>
+
+<!-- Add/Edit Subscription Modal -->
+<div class="modal-overlay" id="sub-modal">
+  <div class="modal">
+    <h3 id="sub-modal-title">Add Subscription Link</h3>
+    <input type="hidden" id="sub-edit-id">
+    <div class="form-group">
+      <label>Name</label>
+      <input type="text" id="sub-name" placeholder="e.g. Main Provider">
+    </div>
+    <div class="form-group">
+      <label>Subscription URL</label>
+      <input type="text" id="sub-url" placeholder="https://...">
+    </div>
+    <div class="form-row" style="margin-bottom:0">
+      <div class="form-group" style="flex:1">
+        <label>Priority (lower = higher priority)</label>
+        <input type="number" id="sub-priority" value="100" min="0">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label>Role</label>
+        <select id="sub-is-main">
+          <option value="0">Backup</option>
+          <option value="1">Main</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button onclick="closeSubModal()">Cancel</button>
+      <button class="btn-primary" onclick="saveSub()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = window.location.pathname.replace(/\/+$/, '');
+let TOKEN = localStorage.getItem('vpn_admin_token') || '';
+let subsCache = [];
+
+// ---- Auth ----
+function login() {
+  TOKEN = document.getElementById('token-input').value.trim();
+  localStorage.setItem('vpn_admin_token', TOKEN);
+  checkAuth();
+}
+function logout() {
+  TOKEN = '';
+  localStorage.removeItem('vpn_admin_token');
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('auth-screen').style.display = 'flex';
+}
+async function checkAuth() {
+  try {
+    const r = await apiFetch('/api/stats');
+    if (r.ok) {
+      document.getElementById('auth-screen').style.display = 'none';
+      document.getElementById('app').style.display = 'block';
+      // Refresh subscription info on page load
+      refreshAllInfo();
+      loadAll();
+    } else {
+      document.getElementById('app').style.display = 'none';
+      document.getElementById('auth-screen').style.display = 'flex';
+    }
+  } catch {
+    document.getElementById('auth-screen').style.display = 'flex';
+  }
+}
+
+// ---- API ----
+function apiFetch(path, opts = {}) {
+  return fetch(API + path, {
+    ...opts,
+    headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json', ...opts.headers },
+  });
+}
+
+function toast(msg, type = 'success') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.background = type === 'error' ? '#da3633' : '#238636';
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+// ---- Helpers ----
+function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return (bytes / Math.pow(1024, i)).toFixed(i > 1 ? 2 : 0) + ' ' + units[i];
+}
+
+function formatExpiry(timestamp) {
+  if (!timestamp || timestamp <= 0) return { text: 'N/A', cls: 'expire-na' };
+  const now = Date.now() / 1000;
+  const diff = timestamp - now;
+  if (diff <= 0) return { text: 'Expired', cls: 'expire-danger' };
+  const days = Math.floor(diff / 86400);
+  if (days > 30) return { text: `${days} days left`, cls: 'expire-ok' };
+  if (days > 7) return { text: `${days} days left`, cls: 'expire-warn' };
+  if (days > 0) return { text: `${days} days left`, cls: 'expire-danger' };
+  const hours = Math.floor(diff / 3600);
+  return { text: `${hours}h left`, cls: 'expire-danger' };
+}
+
+function trafficBarColor(pct) {
+  if (pct > 90) return '#da3633';
+  if (pct > 70) return '#d29922';
+  return '#238636';
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ---- Load ----
+async function loadAll() { loadStats(); loadShares(); loadHealth(); loadSubscriptions(); }
+
+async function loadStats() {
+  const r = await apiFetch('/api/stats');
+  const d = await r.json();
+  document.getElementById('stat-total').textContent = d.totalShares;
+  document.getElementById('stat-active').textContent = d.activeShares;
+  document.getElementById('stat-uses').textContent = d.totalUses;
+  const healthy = d.linkHealth.filter(l => l.healthy).length;
+  const total = d.linkHealth.length;
+  document.getElementById('stat-health').textContent = `${healthy}/${total}`;
+  document.getElementById('stat-health').style.color = healthy === 0 ? '#da3633' : healthy < total ? '#d29922' : '#3fb950';
+}
+
+async function loadSubscriptions() {
+  const r = await apiFetch('/api/subscriptions');
+  subsCache = await r.json();
+  const tbody = document.getElementById('subs-table');
+  if (subsCache.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#8b949e;padding:24px">No subscription links.</td></tr>';
+    updateSubSelectionCheckboxes();
+    return;
+  }
+
+  let latestUpdate = null;
+  tbody.innerHTML = subsCache.map(s => {
+    if (s.info_updated_at && (!latestUpdate || s.info_updated_at > latestUpdate)) latestUpdate = s.info_updated_at;
+
+    const role = s.is_main ? '<span class="badge badge-blue">Main</span>' : '<span class="badge badge-gray">Backup</span>';
+    const status = s.enabled ? '<span class="badge badge-green">Enabled</span>' : '<span class="badge badge-red">Disabled</span>';
+
+    // Traffic
+    let trafficHtml = '<span class="traffic-info" style="color:#484f58">No data</span>';
+    if (s.total > 0) {
+      const used = (s.upload || 0) + (s.download || 0);
+      const pct = Math.min(100, (used / s.total * 100));
+      const remaining = s.total - used;
+      const colorCls = pct > 90 ? 'danger' : pct > 70 ? 'warn' : '';
+      trafficHtml = `
+        <div class="traffic-info${colorCls ? ' ' + colorCls : ''}">${formatBytes(used)} / ${formatBytes(s.total)} (${pct.toFixed(1)}%)</div>
+        <div class="traffic-bar"><div class="traffic-bar-fill" style="width:${pct}%;background:${trafficBarColor(pct)}"></div></div>
+        <div class="traffic-info">Remaining: ${formatBytes(remaining)}</div>
+      `;
+    }
+
+    // Expiry
+    const exp = formatExpiry(s.expire);
+    let expiryHtml = `<span class="${exp.cls}">${exp.text}</span>`;
+    if (s.expire > 0) {
+      expiryHtml += `<div class="traffic-info">${new Date(s.expire * 1000).toLocaleDateString()}</div>`;
+    }
+
+    return `<tr>
+      <td>
+        <strong>${esc(s.name)}</strong>
+        <div class="sub-url mono text-muted" title="${esc(s.url)}">${esc(s.url)}</div>
+      </td>
+      <td style="min-width:150px">${trafficHtml}</td>
+      <td>${expiryHtml}</td>
+      <td>${role}</td>
+      <td>${status}</td>
+      <td class="actions">
+        <button class="btn-sm btn-blue" onclick="testSub(${s.id})">Test</button>
+        <button class="btn-sm" onclick="openEditSubModal(${s.id})">Edit</button>
+        ${s.enabled
+          ? `<button class="btn-sm btn-warn" onclick="toggleSub(${s.id}, false)">Disable</button>`
+          : `<button class="btn-sm btn-primary" onclick="toggleSub(${s.id}, true)">Enable</button>`
+        }
+        <button class="btn-sm btn-danger" onclick="deleteSub(${s.id})">Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  if (latestUpdate) {
+    document.getElementById('info-updated-time').textContent = `Last info refresh: ${new Date(latestUpdate + 'Z').toLocaleString()}`;
+  }
+
+  updateSubSelectionCheckboxes();
+}
+
+function updateSubSelectionCheckboxes() {
+  const container = document.getElementById('sub-selection');
+  const enabled = subsCache.filter(s => s.enabled);
+  container.innerHTML = enabled.map(s => {
+    const used = (s.upload || 0) + (s.download || 0);
+    const detail = s.total > 0 ? `${formatBytes(s.total - used)} remaining` : '';
+    return `<label class="checkbox-item">
+      <input type="checkbox" value="${s.id}" checked>
+      <span>${esc(s.name)}</span>
+      ${detail ? `<span class="sub-detail">(${detail})</span>` : ''}
+    </label>`;
+  }).join('');
+}
+
+function toggleSubSelection() {
+  const mode = document.querySelector('input[name="sub-mode"]:checked').value;
+  document.getElementById('sub-selection').style.display = mode === 'select' ? 'block' : 'none';
+}
+
+async function loadShares() {
+  const r = await apiFetch('/api/shares');
+  const shares = await r.json();
+  const tbody = document.getElementById('shares-table');
+  if (shares.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#8b949e;padding:24px">No share links yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = shares.map(s => {
+    const expired = s.max_uses && s.use_count >= s.max_uses;
+    const status = s.revoked ? '<span class="badge badge-red">Revoked</span>'
+      : expired ? '<span class="badge badge-yellow">Expired</span>'
+      : '<span class="badge badge-green">Active</span>';
+    const uses = `${s.use_count}/${s.max_uses || '∞'}`;
+    const created = new Date(s.created_at + 'Z').toLocaleString();
+
+    // Subscription info
+    let subInfo = '<span class="badge badge-gray">All</span>';
+    if (s.subscription_ids) {
+      try {
+        const ids = JSON.parse(s.subscription_ids);
+        const names = ids.map(id => {
+          const sub = subsCache.find(x => x.id === id);
+          return sub ? sub.name : `#${id}`;
+        });
+        subInfo = names.map(n => `<span class="badge badge-blue" style="margin:1px">${esc(n)}</span>`).join('');
+      } catch { subInfo = '<span class="badge badge-gray">All</span>'; }
+    }
+
+    return `<tr>
+      <td>
+        <strong>${esc(s.label || '(no label)')}</strong>
+        <div class="mono text-muted text-sm">${s.token.slice(0,8)}...</div>
+      </td>
+      <td>${subInfo}</td>
+      <td>${status}</td>
+      <td>${uses}</td>
+      <td class="text-sm">${created}</td>
+      <td class="actions">
+        <button class="btn-sm" onclick="copyUrl('${s.url}')">Copy</button>
+        ${s.revoked
+          ? `<button class="btn-sm btn-primary" onclick="unrevokeShare('${s.token}')">Enable</button>`
+          : `<button class="btn-sm btn-warn" onclick="revokeShare('${s.token}')">Revoke</button>`
+        }
+        <button class="btn-sm btn-danger" onclick="deleteShare('${s.token}')">Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadHealth() {
+  const r = await apiFetch('/api/health');
+  const links = await r.json();
+  document.getElementById('health-grid').innerHTML = links.map(l => {
+    const badge = l.healthy === null ? '<span class="badge badge-gray">Unknown</span>'
+      : l.healthy ? '<span class="badge badge-green">Healthy</span>'
+      : '<span class="badge badge-red">Down</span>';
+    const latency = l.responseTimeMs != null ? `${l.responseTimeMs}ms` : '-';
+    const checked = l.lastCheck ? new Date(l.lastCheck).toLocaleTimeString() : 'Never';
+    return `<div class="health-card">
+      <div class="name">${esc(l.name)}</div>
+      ${badge}
+      <div class="latency">${latency} · ${checked}</div>
+    </div>`;
+  }).join('');
+}
+
+// ---- Share Actions ----
+async function createShare() {
+  const label = document.getElementById('share-label').value.trim();
+  const maxUses = parseInt(document.getElementById('share-max-uses').value) || 0;
+  const mode = document.querySelector('input[name="sub-mode"]:checked').value;
+
+  let subscriptionIds = null;
+  if (mode === 'select') {
+    const checked = [...document.querySelectorAll('#sub-selection input[type="checkbox"]:checked')];
+    subscriptionIds = checked.map(c => parseInt(c.value));
+    if (subscriptionIds.length === 0) { toast('Select at least one subscription', 'error'); return; }
+  }
+
+  const r = await apiFetch('/api/shares', {
+    method: 'POST',
+    body: JSON.stringify({ label, maxUses: maxUses || null, subscriptionIds }),
+  });
+  const d = await r.json();
+  const box = document.getElementById('new-share-url');
+  box.style.display = 'block';
+  box.innerHTML = `<div class="url-box"><code>${esc(d.url)}</code><button class="btn-sm copy-btn" onclick="copyUrl('${d.url}')">Copy</button></div>`;
+  document.getElementById('share-label').value = '';
+  document.getElementById('share-max-uses').value = '1';
+  toast('Share link created!');
+  loadShares(); loadStats();
+}
+
+async function revokeShare(token) {
+  await apiFetch(`/api/shares/${token}/revoke`, { method: 'PATCH' });
+  toast('Share revoked'); loadShares(); loadStats();
+}
+async function unrevokeShare(token) {
+  await apiFetch(`/api/shares/${token}/unrevoke`, { method: 'PATCH' });
+  toast('Share re-enabled'); loadShares(); loadStats();
+}
+async function deleteShare(token) {
+  if (!confirm('Delete this share link permanently?')) return;
+  await apiFetch(`/api/shares/${token}`, { method: 'DELETE' });
+  toast('Share deleted'); loadShares(); loadStats();
+}
+
+// ---- Subscription Actions ----
+function openAddSubModal() {
+  document.getElementById('sub-modal-title').textContent = 'Add Subscription Link';
+  document.getElementById('sub-edit-id').value = '';
+  document.getElementById('sub-name').value = '';
+  document.getElementById('sub-url').value = '';
+  document.getElementById('sub-priority').value = '100';
+  document.getElementById('sub-is-main').value = '0';
+  document.getElementById('sub-modal').classList.add('active');
+}
+async function openEditSubModal(id) {
+  const sub = subsCache.find(s => s.id === id);
+  if (!sub) return;
+  document.getElementById('sub-modal-title').textContent = 'Edit Subscription Link';
+  document.getElementById('sub-edit-id').value = sub.id;
+  document.getElementById('sub-name').value = sub.name;
+  document.getElementById('sub-url').value = sub.url;
+  document.getElementById('sub-priority').value = sub.priority;
+  document.getElementById('sub-is-main').value = sub.is_main ? '1' : '0';
+  document.getElementById('sub-modal').classList.add('active');
+}
+function closeSubModal() { document.getElementById('sub-modal').classList.remove('active'); }
+
+async function saveSub() {
+  const id = document.getElementById('sub-edit-id').value;
+  const data = {
+    name: document.getElementById('sub-name').value.trim(),
+    url: document.getElementById('sub-url').value.trim(),
+    priority: parseInt(document.getElementById('sub-priority').value) || 100,
+    is_main: document.getElementById('sub-is-main').value === '1',
+  };
+  if (!data.name || !data.url) { toast('Name and URL required', 'error'); return; }
+  if (id) {
+    await apiFetch(`/api/subscriptions/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+    toast('Subscription updated');
+  } else {
+    await apiFetch('/api/subscriptions', { method: 'POST', body: JSON.stringify(data) });
+    toast('Subscription added');
+  }
+  closeSubModal();
+  loadSubscriptions(); loadHealth(); loadStats();
+}
+
+async function toggleSub(id, enabled) {
+  await apiFetch(`/api/subscriptions/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled }) });
+  toast(enabled ? 'Subscription enabled' : 'Subscription disabled');
+  loadSubscriptions(); loadStats();
+}
+async function deleteSub(id) {
+  if (!confirm('Delete this subscription link permanently?')) return;
+  await apiFetch(`/api/subscriptions/${id}`, { method: 'DELETE' });
+  toast('Subscription deleted');
+  loadSubscriptions(); loadHealth(); loadStats();
+}
+
+async function testSub(id) {
+  toast('Testing...');
+  const r = await apiFetch(`/api/subscriptions/${id}/test`, { method: 'POST' });
+  const d = await r.json();
+  if (d.ok) {
+    toast(`OK! ${d.elapsed}ms, ${(d.contentLength / 1024).toFixed(1)}KB`);
+    loadSubscriptions(); // Reload to show updated info
+  } else {
+    toast(`Failed: ${d.error}`, 'error');
+  }
+  loadHealth();
+}
+
+async function refreshAllInfo() {
+  toast('Refreshing subscription info...');
+  await apiFetch('/api/subscriptions/refresh-info', { method: 'POST' });
+  toast('Info refreshed');
+  loadSubscriptions(); loadHealth();
+}
+
+async function checkHealth() {
+  toast('Running health check...');
+  await apiFetch('/api/health/check', { method: 'POST' });
+  loadHealth(); loadStats(); loadSubscriptions();
+  toast('Health check complete');
+}
+
+function copyUrl(url) {
+  navigator.clipboard.writeText(url).then(() => toast('Copied!')).catch(() => toast('Copy failed', 'error'));
+}
+
+// ---- Init ----
+document.getElementById('token-input').addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+document.getElementById('sub-modal').addEventListener('click', e => { if (e.target === e.currentTarget) closeSubModal(); });
+if (TOKEN) checkAuth();
+
+// Auto refresh data every 30s, refresh subscription info every 30 minutes
+setInterval(() => { if (document.getElementById('app').style.display !== 'none') loadAll(); }, 30000);
+setInterval(() => { if (document.getElementById('app').style.display !== 'none') refreshAllInfo(); }, 30 * 60 * 1000);
+</script>
+</body>
+</html>
