@@ -527,10 +527,25 @@ async function loadShares() {
       } catch { subInfo = '<span class="badge badge-gray">All</span>'; }
     }
 
+    // Build per-sub URLs
+    const subIdsParsed = s.subscription_ids ? (() => { try { return JSON.parse(s.subscription_ids); } catch { return null; } })() : null;
+    const includedSubs = subIdsParsed
+      ? subsCache.filter(x => subIdsParsed.includes(x.id))
+      : subsCache.filter(x => x.enabled);
+
+    let urlsHtml;
+    if (includedSubs.length <= 1) {
+      const url = s.url + '/0';
+      urlsHtml = `<span class="mono text-sm" style="color:#58a6ff;cursor:pointer" onclick="copyUrl('${url}')" title="${url}">Click to copy</span>`;
+    } else {
+      urlsHtml = `<span class="mono text-sm" style="color:#58a6ff;cursor:pointer" onclick="copyUrl('${s.url}')" title="Page with all links">Page link (copy)</span>`;
+    }
+
     return `<tr>
       <td>
         <strong>${esc(s.label || '(no label)')}</strong>
         <div class="mono text-muted text-sm">${s.token.slice(0,8)}...</div>
+        <div style="margin-top:2px">${urlsHtml}</div>
       </td>
       <td>${subInfo}</td>
       <td>${status}</td>
@@ -584,9 +599,30 @@ async function createShare() {
     body: JSON.stringify({ label, maxUses: maxUses || null, subscriptionIds }),
   });
   const d = await r.json();
+
+  // Determine which subs are included
+  const subIds = d.subscription_ids ? JSON.parse(d.subscription_ids) : null;
+  const includedSubs = subIds
+    ? subsCache.filter(s => subIds.includes(s.id) && s.enabled)
+    : subsCache.filter(s => s.enabled);
+
   const box = document.getElementById('new-share-url');
   box.style.display = 'block';
-  box.innerHTML = `<div class="url-box"><code>${esc(d.url)}</code><button class="btn-sm copy-btn" onclick="copyUrl('${d.url}')">Copy</button></div>`;
+
+  if (includedSubs.length <= 1) {
+    // Single subscription — show direct link
+    const url = d.url + '/0';
+    box.innerHTML = `<div class="url-box"><code>${esc(url)}</code><button class="btn-sm copy-btn" onclick="copyUrl('${url}')">Copy</button></div>`;
+  } else {
+    // Multiple subscriptions — show overview page link + individual links
+    let html = `<div class="url-box"><code>${esc(d.url)}</code><button class="btn-sm copy-btn" onclick="copyUrl('${d.url}')">Copy Page Link</button></div>`;
+    html += '<div style="margin-top:8px;font-size:0.8rem;color:#8b949e">Individual subscription links:</div>';
+    includedSubs.forEach((sub, i) => {
+      const url = d.url + '/' + i;
+      html += `<div class="url-box" style="margin-top:4px"><code><strong>${esc(sub.name)}</strong>: ${esc(url)}</code><button class="btn-sm copy-btn" onclick="copyUrl('${url}')">Copy</button></div>`;
+    });
+  }
+
   document.getElementById('share-label').value = '';
   document.getElementById('share-max-uses').value = '1';
   toast('Share link created!');

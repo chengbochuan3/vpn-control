@@ -340,58 +340,129 @@ async function fetchMultipleSubscriptions(links) {
 }
 
 // ---------------------------------------------------------------------------
-// Public share endpoint
+// Public share endpoints
 // ---------------------------------------------------------------------------
-app.get('/s/:token', async (req, res) => {
-  const share = db.getShareByToken(req.params.token);
 
-  if (!share) return res.status(404).send('Link not found');
-  if (share.revoked) return res.status(403).send('This link has been revoked');
+// Shared access-control logic
+function checkShareAccess(share, req, res) {
+  if (!share) { res.status(404).send('Link not found'); return null; }
+  if (share.revoked) { res.status(403).send('This link has been revoked'); return null; }
 
-  // Determine client IP (supports reverse proxy)
   const clientIp =
     req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
     req.headers['x-real-ip'] ||
     req.socket.remoteAddress;
 
-  // Check if this is a new import or a refresh from a known client
-  const isNewImport = db.recordClientAccess(req.params.token, clientIp);
-  const importCount = db.getShareImportCount(req.params.token);
+  const isNewImport = db.recordClientAccess(share.token, clientIp);
+  const importCount = db.getShareImportCount(share.token);
 
-  // Only block NEW imports when limit is reached; refreshes from known clients always pass
   if (isNewImport && share.max_uses && importCount > share.max_uses) {
-    return res.status(410).send('This link has expired (import limit reached)');
+    res.status(410).send('This link has expired (import limit reached)');
+    return null;
   }
+
+  return { clientIp, isNewImport, importCount };
+}
+
+// Get the list of subscriptions for a share
+function getShareSubscriptions(share) {
+  const subIds = share.subscription_ids ? JSON.parse(share.subscription_ids) : null;
+  if (subIds && subIds.length > 0) {
+    return db.getSubscriptionsByIds(subIds);
+  }
+  return db.getEnabledSubscriptions();
+}
+
+// /s/:token — overview page listing all subscription links for this share
+app.get('/s/:token', (req, res) => {
+  const share = db.getShareByToken(req.params.token);
+  if (!share) return res.status(404).send('Link not found');
+  if (share.revoked) return res.status(403).send('This link has been revoked');
+
+  const subs = getShareSubscriptions(share);
+  if (subs.length === 0) {
+    return res.status(502).send('No subscriptions available');
+  }
+
+  // If only 1 subscription, redirect directly to it
+  if (subs.length === 1) {
+    return res.redirect(`/s/${share.token}/0`);
+  }
+
+  // Build a simple page listing all subscription links
+  const baseUrl = config.baseUrl;
+  const links = subs.map((sub, i) => {
+    const url = `${baseUrl}/s/${share.token}/${i}`;
+    return { name: sub.name, url, index: i };
+  });
+
+  res.send(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VPN Subscriptions</title>
+<style>
+  body{font-family:-apple-system,sans-serif;background:#0f1117;color:#e1e4e8;display:flex;justify-content:center;padding:40px 20px}
+  .card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:24px;max-width:600px;width:100%}
+  h2{margin-bottom:16px;font-size:1.2rem}
+  .sub{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:12px;margin-bottom:10px}
+  .sub .name{font-weight:600;margin-bottom:6px}
+  .sub .url{font-size:0.82rem;color:#58a6ff;word-break:break-all;font-family:monospace}
+  .sub .actions{margin-top:8px;display:flex;gap:6px}
+  button{padding:6px 14px;border-radius:6px;border:1px solid #30363d;background:#21262d;color:#e1e4e8;cursor:pointer;font-size:0.82rem}
+  button:hover{background:#30363d}
+  .btn-blue{background:#1f6feb;border-color:#1f6feb}
+  .btn-blue:hover{background:#388bfd}
+  .note{font-size:0.8rem;color:#8b949e;margin-top:16px}
+  .toast{position:fixed;bottom:20px;right:20px;padding:10px 18px;background:#238636;color:#fff;border-radius:8px;font-size:0.85rem;opacity:0;transition:opacity 0.3s;pointer-events:none}
+  .toast.show{opacity:1}
+</style>
+</head><body>
+<div class="card">
+  <h2>Subscription Links</h2>
+  <p style="font-size:0.85rem;color:#8b949e;margin-bottom:16px">Add each link below as a separate subscription in your VPN client (Clash, Shadowrocket, etc.)</p>
+  ${links.map(l => `
+  <div class="sub">
+    <div class="name">${l.name}</div>
+    <div class="url">${l.url}</div>
+    <div class="actions">
+      <button class="btn-blue" onclick="copy('${l.url}')">Copy Link</button>
+      <button onclick="window.open('clash://install-config?url='+encodeURIComponent('${l.url}'))">Open in Clash</button>
+    </div>
+  </div>`).join('')}
+  <div class="note">Each link is a separate subscription. Import them individually so you can see traffic and expiry for each one.</div>
+</div>
+<div class="toast" id="toast">Copied!</div>
+<script>
+function copy(url){navigator.clipboard.writeText(url).then(()=>{const t=document.getElementById('toast');t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2000)})}
+</script>
+</body></html>`);
+});
+
+// /s/:token/:index — proxy to a specific subscription
+app.get('/s/:token/:index', async (req, res) => {
+  const share = db.getShareByToken(req.params.token);
+  const access = checkShareAccess(share, req, res);
+  if (!access) return;
+
+  const subs = getShareSubscriptions(share);
+  const index = parseInt(req.params.index);
+
+  if (isNaN(index) || index < 0 || index >= subs.length) {
+    return res.status(404).send('Subscription index out of range');
+  }
+
+  const targetSub = subs[index];
 
   try {
     let result;
-    const subIds = share.subscription_ids ? JSON.parse(share.subscription_ids) : null;
-
-    if (subIds && subIds.length > 0) {
-      const links = db.getSubscriptionsByIds(subIds);
-      if (links.length === 0) {
-        return res.status(502).send('No enabled subscriptions available for this share');
-      }
-      if (subIds.length === 1) {
-        result = await fetchSingleSubscription(links[0]).catch(async () => {
-          console.log(`[share] Selected sub failed, falling back`);
-          return fetchSubscriptionFailover(db.getEnabledSubscriptions());
-        });
-      } else {
-        result = await fetchMultipleSubscriptions(links);
-      }
-    } else {
-      const links = db.getEnabledSubscriptions();
-      if (links.length === 0) {
-        return res.status(502).send('No subscriptions available');
-      }
-      result = await fetchMultipleSubscriptions(links);
+    try {
+      result = await fetchSingleSubscription(targetSub);
+    } catch (err) {
+      console.log(`[share] Sub "${targetSub.name}" failed: ${err.message}, trying failover`);
+      result = await fetchSubscriptionFailover(db.getEnabledSubscriptions());
     }
 
     if (!result) {
-      return res
-        .status(502)
-        .send('All upstream subscription sources are currently unavailable');
+      return res.status(502).send('Upstream subscription is currently unavailable');
     }
 
     db.incrementUseCount(req.params.token);
@@ -406,10 +477,10 @@ app.get('/s/:token', async (req, res) => {
     res.set('profile-update-interval', '24');
     res.send(result.content);
 
-    const action = isNewImport ? 'IMPORT' : 'REFRESH';
+    const action = access.isNewImport ? 'IMPORT' : 'REFRESH';
     console.log(
-      `[access] Share "${share.label}" (${share.token.slice(0, 8)}...) ${action} by ${clientIp}. ` +
-        `Imports: ${importCount}/${share.max_uses || '∞'}. Source: ${result.source}`
+      `[access] Share "${share.label}" (${share.token.slice(0, 8)}...) sub#${index} "${targetSub.name}" ${action} by ${access.clientIp}. ` +
+        `Imports: ${access.importCount}/${share.max_uses || '∞'}`
     );
   } catch (err) {
     console.error('[proxy error]', err);
