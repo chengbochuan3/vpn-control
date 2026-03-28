@@ -39,6 +39,16 @@ function initDb(defaultSubscriptions) {
       checked_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS share_clients (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      share_token TEXT NOT NULL,
+      client_ip TEXT NOT NULL,
+      first_seen TEXT NOT NULL DEFAULT (datetime('now')),
+      last_seen TEXT NOT NULL DEFAULT (datetime('now')),
+      access_count INTEGER NOT NULL DEFAULT 1,
+      UNIQUE(share_token, client_ip)
+    );
+
     CREATE TABLE IF NOT EXISTS subscriptions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -106,6 +116,39 @@ function incrementUseCount(token) {
   db.prepare(
     "UPDATE shares SET use_count = use_count + 1, last_used_at = datetime('now') WHERE token = ?"
   ).run(token);
+}
+
+// Returns true if this is a NEW client (counts as an import), false if existing (just a refresh)
+function recordClientAccess(token, clientIp) {
+  const existing = db.prepare(
+    'SELECT id FROM share_clients WHERE share_token = ? AND client_ip = ?'
+  ).get(token, clientIp);
+
+  if (existing) {
+    // Known client — just update last_seen and access_count (this is a refresh)
+    db.prepare(
+      "UPDATE share_clients SET last_seen = datetime('now'), access_count = access_count + 1 WHERE share_token = ? AND client_ip = ?"
+    ).run(token, clientIp);
+    return false;
+  }
+
+  // New client — record it (this is an import)
+  db.prepare(
+    'INSERT INTO share_clients (share_token, client_ip) VALUES (?, ?)'
+  ).run(token, clientIp);
+  return true;
+}
+
+function getShareClients(token) {
+  return db.prepare(
+    'SELECT * FROM share_clients WHERE share_token = ? ORDER BY first_seen DESC'
+  ).all(token);
+}
+
+function getShareImportCount(token) {
+  return db.prepare(
+    'SELECT COUNT(*) as c FROM share_clients WHERE share_token = ?'
+  ).get(token).c;
 }
 
 function listShares() {
@@ -246,6 +289,9 @@ module.exports = {
   updateSubscriptionInfo,
   deleteSubscription,
   getEnabledSubscriptions,
+  recordClientAccess,
+  getShareClients,
+  getShareImportCount,
   logHealth,
   getHealthHistory,
   getLatestHealth,

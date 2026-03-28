@@ -252,7 +252,8 @@
             <th>Label</th>
             <th>Subscriptions</th>
             <th>Status</th>
-            <th>Uses</th>
+            <th>Imports</th>
+            <th>Refreshes</th>
             <th>Created</th>
             <th>Actions</th>
           </tr>
@@ -497,16 +498,21 @@ async function loadShares() {
   const shares = await r.json();
   const tbody = document.getElementById('shares-table');
   if (shares.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#8b949e;padding:24px">No share links yet.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#8b949e;padding:24px">No share links yet.</td></tr>';
     return;
   }
   tbody.innerHTML = shares.map(s => {
-    const expired = s.max_uses && s.use_count >= s.max_uses;
+    const importCount = s.import_count || 0;
+    const expired = s.max_uses && importCount >= s.max_uses;
     const status = s.revoked ? '<span class="badge badge-red">Revoked</span>'
-      : expired ? '<span class="badge badge-yellow">Expired</span>'
+      : expired ? '<span class="badge badge-yellow">Full</span>'
       : '<span class="badge badge-green">Active</span>';
-    const uses = `${s.use_count}/${s.max_uses || '∞'}`;
+    const imports = `${importCount}/${s.max_uses || '∞'}`;
+    const refreshes = s.use_count || 0;
     const created = new Date(s.created_at + 'Z').toLocaleString();
+
+    // Client IPs tooltip
+    const clientTip = (s.clients || []).map(c => c.client_ip).join(', ') || 'None';
 
     // Subscription info
     let subInfo = '<span class="badge badge-gray">All</span>';
@@ -528,7 +534,8 @@ async function loadShares() {
       </td>
       <td>${subInfo}</td>
       <td>${status}</td>
-      <td>${uses}</td>
+      <td title="Clients: ${esc(clientTip)}">${imports}</td>
+      <td>${refreshes}</td>
       <td class="text-sm">${created}</td>
       <td class="actions">
         <button class="btn-sm" onclick="copyUrl('${s.url}')">Copy</button>

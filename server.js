@@ -274,8 +274,20 @@ app.get('/s/:token', async (req, res) => {
 
   if (!share) return res.status(404).send('Link not found');
   if (share.revoked) return res.status(403).send('This link has been revoked');
-  if (share.max_uses && share.use_count >= share.max_uses) {
-    return res.status(410).send('This link has expired (usage limit reached)');
+
+  // Determine client IP (supports reverse proxy)
+  const clientIp =
+    req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+    req.headers['x-real-ip'] ||
+    req.socket.remoteAddress;
+
+  // Check if this is a new import or a refresh from a known client
+  const isNewImport = db.recordClientAccess(req.params.token, clientIp);
+  const importCount = db.getShareImportCount(req.params.token);
+
+  // Only block NEW imports when limit is reached; refreshes from known clients always pass
+  if (isNewImport && share.max_uses && importCount > share.max_uses) {
+    return res.status(410).send('This link has expired (import limit reached)');
   }
 
   try {
@@ -283,23 +295,19 @@ app.get('/s/:token', async (req, res) => {
     const subIds = share.subscription_ids ? JSON.parse(share.subscription_ids) : null;
 
     if (subIds && subIds.length > 0) {
-      // Specific subscriptions selected
       const links = db.getSubscriptionsByIds(subIds);
       if (links.length === 0) {
         return res.status(502).send('No enabled subscriptions available for this share');
       }
       if (subIds.length === 1) {
-        // Single subscription - use failover to other enabled links if it fails
         result = await fetchSingleSubscription(links[0]).catch(async () => {
           console.log(`[share] Selected sub failed, falling back`);
           return fetchSubscriptionFailover(db.getEnabledSubscriptions());
         });
       } else {
-        // Multiple subscriptions - merge them all
         result = await fetchMultipleSubscriptions(links);
       }
     } else {
-      // No specific selection = all enabled, merge them
       const links = db.getEnabledSubscriptions();
       if (links.length === 0) {
         return res.status(502).send('No subscriptions available');
@@ -325,9 +333,10 @@ app.get('/s/:token', async (req, res) => {
     res.set('profile-update-interval', '24');
     res.send(result.content);
 
+    const action = isNewImport ? 'IMPORT' : 'REFRESH';
     console.log(
-      `[access] Share "${share.label}" (${share.token.slice(0, 8)}...) used. ` +
-        `Count: ${share.use_count + 1}/${share.max_uses || '∞'}. Source: ${result.source}`
+      `[access] Share "${share.label}" (${share.token.slice(0, 8)}...) ${action} by ${clientIp}. ` +
+        `Imports: ${importCount}/${share.max_uses || '∞'}. Source: ${result.source}`
     );
   } catch (err) {
     console.error('[proxy error]', err);
@@ -338,24 +347,29 @@ app.get('/s/:token', async (req, res) => {
 // ---------------------------------------------------------------------------
 // Admin API — Shares
 // ---------------------------------------------------------------------------
+function enrichShare(s) {
+  return {
+    ...s,
+    url: `${config.baseUrl}/s/${s.token}`,
+    import_count: db.getShareImportCount(s.token),
+    clients: db.getShareClients(s.token),
+  };
+}
+
 app.post('/api/shares', requireAdmin, (req, res) => {
   const { label, maxUses, subscriptionIds } = req.body;
   const share = db.createShare(label, maxUses, subscriptionIds);
-  res.json({ ...share, url: `${config.baseUrl}/s/${share.token}` });
+  res.json(enrichShare(share));
 });
 
 app.get('/api/shares', requireAdmin, (req, res) => {
-  const shares = db.listShares().map((s) => ({
-    ...s,
-    url: `${config.baseUrl}/s/${s.token}`,
-  }));
-  res.json(shares);
+  res.json(db.listShares().map(enrichShare));
 });
 
 app.get('/api/shares/:token', requireAdmin, (req, res) => {
   const share = db.getShareByToken(req.params.token);
   if (!share) return res.status(404).json({ error: 'Not found' });
-  res.json({ ...share, url: `${config.baseUrl}/s/${share.token}` });
+  res.json(enrichShare(share));
 });
 
 app.patch('/api/shares/:token', requireAdmin, (req, res) => {
