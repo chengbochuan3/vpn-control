@@ -1,5 +1,6 @@
 const express = require('express');
 const path = require('path');
+const yaml = require('js-yaml');
 const config = require('./config');
 const db = require('./database');
 
@@ -62,52 +63,18 @@ function parseSubInfo(header) {
   return info;
 }
 
-// Detect if content is Clash YAML format
+// Detect content format
 function isClashYaml(content) {
   return /^(port|mixed-port|proxies|proxy-groups):/m.test(content);
 }
 
-// Detect if content is base64-encoded proxy list
 function isBase64ProxyList(content) {
-  const trimmed = content.trim();
-  // Try base64 decode first line
   try {
-    const decoded = Buffer.from(trimmed, 'base64').toString('utf-8');
+    const decoded = Buffer.from(content.trim(), 'base64').toString('utf-8');
     return /^(ss|ssr|vmess|vless|trojan|hysteria|hy2|tuic):\/\//m.test(decoded);
   } catch {
     return false;
   }
-}
-
-// Extract proxies from Clash YAML content (simple parser, no YAML lib needed)
-function extractClashProxies(content) {
-  const lines = content.split('\n');
-  const proxies = [];
-  let inProxies = false;
-  let currentProxy = '';
-
-  for (const line of lines) {
-    if (/^proxies:/.test(line)) {
-      inProxies = true;
-      continue;
-    }
-    if (inProxies) {
-      if (/^\S/.test(line) && !/^\s*-/.test(line) && line.trim() !== '') {
-        // New top-level key, end of proxies section
-        break;
-      }
-      if (/^\s*-\s*\{/.test(line)) {
-        proxies.push(line);
-      } else if (/^\s*-\s+/.test(line)) {
-        if (currentProxy) proxies.push(currentProxy);
-        currentProxy = line;
-      } else if (currentProxy && /^\s+/.test(line)) {
-        currentProxy += '\n' + line;
-      }
-    }
-  }
-  if (currentProxy) proxies.push(currentProxy);
-  return proxies;
 }
 
 // Merge multiple subscription contents into one
@@ -115,18 +82,16 @@ function mergeSubscriptionContents(results) {
   if (results.length === 0) return null;
   if (results.length === 1) return results[0];
 
-  // Check formats
-  const hasClash = results.some((r) => isClashYaml(r.content));
-  const hasBase64 = results.some((r) => isBase64ProxyList(r.content));
+  const clashResults = results.filter((r) => isClashYaml(r.content));
+  const base64Results = results.filter((r) => isBase64ProxyList(r.content));
 
-  if (hasBase64 && !hasClash) {
-    // Merge base64 proxy lists
+  // All base64: merge decoded lines
+  if (base64Results.length > 0 && clashResults.length === 0) {
     const allLines = [];
-    for (const r of results) {
+    for (const r of base64Results) {
       const decoded = Buffer.from(r.content.trim(), 'base64').toString('utf-8');
       allLines.push(...decoded.split('\n').filter((l) => l.trim()));
     }
-    // Deduplicate by full line
     const unique = [...new Set(allLines)];
     return {
       content: Buffer.from(unique.join('\n')).toString('base64'),
@@ -134,77 +99,79 @@ function mergeSubscriptionContents(results) {
     };
   }
 
-  if (hasClash) {
-    // Use the first Clash config as base, merge proxies from all others
-    const baseResult = results.find((r) => isClashYaml(r.content));
-    const baseContent = baseResult.content;
-    const allExtraProxies = [];
-    const existingNames = new Set();
-
-    // Get names from base proxies
-    const baseProxies = extractClashProxies(baseContent);
-    for (const p of baseProxies) {
-      const nameMatch = p.match(/name:\s*["']?([^"',}\n]+)/);
-      if (nameMatch) existingNames.add(nameMatch[1].trim());
+  // Has Clash YAML: merge using proper YAML parsing
+  if (clashResults.length > 0) {
+    try {
+      return mergeClashConfigs(clashResults);
+    } catch (err) {
+      console.error('[merge] YAML merge failed, returning first result:', err.message);
+      return results[0];
     }
-
-    // Extract proxies from other results
-    for (const r of results) {
-      if (r === baseResult) continue;
-      let content = r.content;
-      // If it's base64, decode it - can't merge into YAML easily, skip
-      if (isBase64ProxyList(content)) continue;
-      if (!isClashYaml(content)) continue;
-
-      const proxies = extractClashProxies(content);
-      for (const p of proxies) {
-        const nameMatch = p.match(/name:\s*["']?([^"',}\n]+)/);
-        const name = nameMatch ? nameMatch[1].trim() : null;
-        if (name && !existingNames.has(name)) {
-          existingNames.add(name);
-          allExtraProxies.push(p);
-        }
-      }
-    }
-
-    if (allExtraProxies.length > 0) {
-      // Insert extra proxies after existing proxies section
-      const lines = baseContent.split('\n');
-      const result = [];
-      let inProxies = false;
-      let inserted = false;
-
-      for (let i = 0; i < lines.length; i++) {
-        result.push(lines[i]);
-        if (/^proxies:/.test(lines[i])) {
-          inProxies = true;
-        }
-        if (inProxies && !inserted) {
-          // Check if next line starts a new section
-          const nextLine = lines[i + 1];
-          if (nextLine && /^\S/.test(nextLine) && !/^\s*-/.test(nextLine)) {
-            result.push(...allExtraProxies);
-            inserted = true;
-            inProxies = false;
-          }
-        }
-      }
-      if (!inserted) {
-        // Proxies was the last section
-        result.push(...allExtraProxies);
-      }
-
-      return {
-        content: result.join('\n'),
-        contentType: baseResult.contentType,
-      };
-    }
-
-    return baseResult;
   }
 
-  // Fallback: return first result
   return results[0];
+}
+
+// Properly merge multiple Clash YAML configs
+function mergeClashConfigs(results) {
+  // Parse all configs
+  const configs = results.map((r) => {
+    try {
+      return yaml.load(r.content);
+    } catch {
+      return null;
+    }
+  }).filter(Boolean);
+
+  if (configs.length === 0) return results[0];
+
+  // Use first config as base
+  const base = configs[0];
+  const baseProxies = base.proxies || [];
+  const existingNames = new Set(baseProxies.map((p) => p.name));
+  const newProxyNames = [];
+
+  // Merge proxies from all other configs
+  for (let i = 1; i < configs.length; i++) {
+    const extraProxies = configs[i].proxies || [];
+    for (const proxy of extraProxies) {
+      if (proxy.name && !existingNames.has(proxy.name)) {
+        existingNames.add(proxy.name);
+        baseProxies.push(proxy);
+        newProxyNames.push(proxy.name);
+      }
+    }
+  }
+
+  base.proxies = baseProxies;
+
+  // Add new proxy names to proxy-groups so they're actually usable
+  if (base['proxy-groups'] && newProxyNames.length > 0) {
+    for (const group of base['proxy-groups']) {
+      if (!group.proxies) continue;
+      // Add to groups that use "select" or "url-test" or "fallback" or "load-balance"
+      const type = group.type;
+      if (['select', 'url-test', 'fallback', 'load-balance'].includes(type)) {
+        group.proxies.push(...newProxyNames);
+      }
+    }
+  }
+
+  const merged = yaml.dump(base, {
+    lineWidth: -1,     // no line wrapping
+    noRefs: true,       // no YAML anchors
+    quotingType: '"',
+    forceQuotes: false,
+  });
+
+  console.log(
+    `[merge] Merged ${configs.length} configs: ${baseProxies.length} total proxies (${newProxyNames.length} new)`
+  );
+
+  return {
+    content: merged,
+    contentType: 'text/yaml; charset=utf-8',
+  };
 }
 
 // Fetch from a single subscription with failover awareness
